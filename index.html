@@ -37,37 +37,50 @@ const txtCanvas=document.getElementById("txt")
 const tctx=txtCanvas.getContext("2d")
 const errorBox=document.getElementById("error")
 
-let recording=false
 let recorder
 let chunks=[]
+let recording=false
 
-navigator.mediaDevices.getUserMedia({video:{width:640,height:480},audio:true})
-.then(s=>{
-video.srcObject=s
-})
-.catch(err=>{
-errorBox.textContent="Camera/Mic blocked or unavailable: "+err.name
-})
-
-const gl=glCanvas.getContext("webgl")
 glCanvas.width=640
 glCanvas.height=480
 
+const gl=glCanvas.getContext("webgl",{premultipliedAlpha:false})
+
+if(!gl){
+errorBox.textContent="WebGL not supported"
+}
+
+gl.viewport(0,0,640,480)
+
 const vs=`attribute vec2 p;varying vec2 uv;void main(){uv=(p+1.0)*0.5;gl_Position=vec4(p,0.0,1.0);}`
-const fs=`precision mediump float;uniform sampler2D uTex;uniform sampler2D uTxt;uniform float uTime;varying vec2 uv;
-float n(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
+
+const fs=`precision mediump float;
+uniform sampler2D uTex;
+uniform sampler2D uTxt;
+uniform float uTime;
+varying vec2 uv;
+
+float n(vec2 p){
+return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);
+}
+
 void main(){
 vec2 r=vec2(640.0,480.0);
-vec2 uv2=floor(uv*r)/r;
-vec3 c=texture2D(uTex,uv2).rgb;
-c=mix(c,c*c*1.25,0.35);
-c.r*=1.08;
+vec2 puv=floor(uv*r)/r;
+
+vec3 c=texture2D(uTex,puv).rgb;
+
+c=c*c*1.15;
+c.r*=1.10;
 c.g*=1.02;
-c.b*=0.9;
-float g=n(uv*r+vec2(fract(sin(uTime)*1000.0)));
+c.b*=0.88;
+
+float g=n(puv*r+uTime*10.0);
 c+=g*0.08;
+
 vec4 t=texture2D(uTxt,uv);
 c=mix(c,t.rgb,t.a);
+
 gl_FragColor=vec4(c,1.0);
 }`
 
@@ -95,12 +108,37 @@ gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0)
 const tex=gl.createTexture()
 gl.bindTexture(gl.TEXTURE_2D,tex)
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR)
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE)
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE)
 
 const txtTex=gl.createTexture()
 gl.bindTexture(gl.TEXTURE_2D,txtTex)
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR)
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE)
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE)
 
 const uTimeLoc=gl.getUniformLocation(prog,"uTime")
+
+let streamRef=null
+
+navigator.mediaDevices.getUserMedia({
+video:{width:640,height:480},
+audio:{
+echoCancellation:true,
+noiseSuppression:true,
+autoGainControl:true
+}
+})
+.then(async s=>{
+streamRef=s
+video.srcObject=s
+video.muted=true
+video.playsInline=true
+await video.play()
+})
+.catch(err=>{
+errorBox.textContent="Camera error: "+err.name
+})
 
 function updateText(){
 const d=new Date()
@@ -110,21 +148,27 @@ tctx.fillStyle="#000"
 tctx.fillRect(0,0,640,480)
 tctx.font="20px Courier New"
 tctx.fillStyle="#ff7a00"
-tctx.fillText(str,430,460)
+tctx.fillText(str,420,460)
 }
 
 function draw(t){
-if(video.readyState>=2){
+if(video.videoWidth>0){
 gl.uniform1f(uTimeLoc,t*0.001)
+
 gl.bindTexture(gl.TEXTURE_2D,tex)
 gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video)
+
 updateText()
+
 gl.bindTexture(gl.TEXTURE_2D,txtTex)
 gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,txtCanvas)
+
 gl.drawArrays(gl.TRIANGLE_STRIP,0,4)
 }
+
 requestAnimationFrame(draw)
 }
+
 requestAnimationFrame(draw)
 
 document.getElementById("snap").onclick=()=>{
@@ -133,6 +177,7 @@ c.width=640
 c.height=480
 const cx=c.getContext("2d")
 cx.drawImage(glCanvas,0,0)
+
 c.toBlob(b=>{
 const a=document.createElement("a")
 a.href=URL.createObjectURL(b)
@@ -143,21 +188,32 @@ a.click()
 
 document.getElementById("rec").onclick=()=>{
 if(!recording){
+chunks=[]
+
 let stream=glCanvas.captureStream(30)
-let aud=video.srcObject?.getAudioTracks?.()
-if(aud&&aud.length) stream.addTrack(aud[0])
+
+if(streamRef){
+const audioTracks=streamRef.getAudioTracks()
+if(audioTracks.length>0) stream.addTrack(audioTracks[0])
+}
+
 let mime="video/mp4"
 if(!MediaRecorder.isTypeSupported(mime)) mime="video/webm"
+
 recorder=new MediaRecorder(stream,{mimeType:mime})
-recorder.ondataavailable=e=>chunks.push(e.data)
+
+recorder.ondataavailable=e=>{
+if(e.data.size>0) chunks.push(e.data)
+}
+
 recorder.onstop=()=>{
-let blob=new Blob(chunks,{type:mime})
-chunks=[]
-let a=document.createElement("a")
+const blob=new Blob(chunks,{type:mime})
+const a=document.createElement("a")
 a.href=URL.createObjectURL(blob)
 a.download="ccd."+mime.split("/")[1]
 a.click()
 }
+
 recorder.start()
 recording=true
 document.getElementById("rec").innerText="Stop & Save"
