@@ -3,61 +3,58 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>CCD Webcam</title>
+<title>CCD Camera</title>
 <style>
-body{margin:0;background:#0b0b0f;color:#fff;font-family:system-ui,Arial;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh}
+body{margin:0;background:#0b0b10;display:flex;justify-content:center;align-items:center;height:100vh;color:#fff;font-family:system-ui}
 .wrap{width:640px}
-.stage{position:relative;width:640px;height:480px;background:#000}
+.stage{position:relative;width:640px;height:480px;background:#000;overflow:hidden}
 canvas{position:absolute;left:0;top:0;width:640px;height:480px}
-.controls{display:flex;gap:10px;margin-top:12px}
-button{flex:1;padding:10px;background:#111;color:#fff;border:1px solid #333;cursor:pointer;font-family:Courier New}
+.controls{display:flex;gap:10px;margin-top:10px}
+button{flex:1;padding:10px;background:#111;border:1px solid #333;color:#fff;font-family:Courier New;cursor:pointer}
 button:hover{background:#1a1a1a}
-#error{position:absolute;left:10px;top:10px;color:#ff4d4d;font-family:Courier New;font-size:12px}
+#error{position:absolute;top:10px;left:10px;font-size:12px;color:#ff5555;font-family:Courier New}
 </style>
 </head>
 <body>
+
 <div class="wrap">
 <div class="stage">
 <canvas id="gl"></canvas>
 <div id="error"></div>
 </div>
+
 <div class="controls">
-<button id="snap">Snap Photo (JPG)</button>
-<button id="rec">Start Recording (MP4)</button>
+<button id="snap">Snap JPG</button>
+<button id="rec">Start Recording</button>
 </div>
 </div>
 
-<video id="vid" autoplay playsinline style="display:none"></video>
-<canvas id="txt" width="640" height="480" style="display:none"></canvas>
+<video id="vid" autoplay playsinline muted style="display:none"></video>
+<canvas id="hud" width="640" height="480" style="display:none"></canvas>
 
 <script>
 const video=document.getElementById("vid")
 const glCanvas=document.getElementById("gl")
-const txtCanvas=document.getElementById("txt")
-const tctx=txtCanvas.getContext("2d")
-const errorBox=document.getElementById("error")
-
-let recorder
-let chunks=[]
-let recording=false
+const hud=document.getElementById("hud")
+const hctx=hud.getContext("2d")
+const err=document.getElementById("error")
 
 glCanvas.width=640
 glCanvas.height=480
 
-const gl=glCanvas.getContext("webgl",{premultipliedAlpha:false})
+const gl=glCanvas.getContext("webgl")
 
-if(!gl){
-errorBox.textContent="WebGL not supported"
-}
-
-gl.viewport(0,0,640,480)
+let stream=null
+let recorder=null
+let chunks=[]
+let recording=false
 
 const vs=`attribute vec2 p;varying vec2 uv;void main(){uv=(p+1.0)*0.5;gl_Position=vec4(p,0.0,1.0);}`
 
 const fs=`precision mediump float;
-uniform sampler2D uTex;
-uniform sampler2D uTxt;
-uniform float uTime;
+uniform sampler2D tex;
+uniform sampler2D hudTex;
+uniform float t;
 varying vec2 uv;
 
 float n(vec2 p){
@@ -66,34 +63,42 @@ return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);
 
 void main(){
 vec2 r=vec2(640.0,480.0);
-vec2 puv=floor(uv*r)/r;
 
-vec3 c=texture2D(uTex,puv).rgb;
+vec2 suv=uv;
+suv.x += sin(uv.y*40.0 + t*2.0)*0.002;
 
-c=c*c*1.15;
-c.r*=1.10;
-c.g*=1.02;
-c.b*=0.88;
+vec2 cuv=floor(suv*r)/r;
 
-float g=n(puv*r+uTime*10.0);
-c+=g*0.08;
+vec3 c=texture2D(tex,cuv).rgb;
 
-vec4 t=texture2D(uTxt,uv);
-c=mix(c,t.rgb,t.a);
+float scan = sin(uv.y*480.0 + t*50.0)*0.02;
+c += scan;
+
+c = pow(c, vec3(0.85));
+
+c.r *= 1.12;
+c.g *= 1.03;
+c.b *= 0.85;
+
+float noise=n(uv*r + t*1000.0);
+c += noise*0.06;
+
+vec4 hudc=texture2D(hudTex,uv);
+c=mix(c,hudc.rgb,hudc.a);
 
 gl_FragColor=vec4(c,1.0);
 }`
 
-function sh(type,src){
-const s=gl.createShader(type)
-gl.shaderSource(s,src)
-gl.compileShader(s)
-return s
+function shader(t,s){
+const sh=gl.createShader(t)
+gl.shaderSource(sh,s)
+gl.compileShader(sh)
+return sh
 }
 
 const prog=gl.createProgram()
-gl.attachShader(prog,sh(gl.VERTEX_SHADER,vs))
-gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,fs))
+gl.attachShader(prog,shader(gl.VERTEX_SHADER,vs))
+gl.attachShader(prog,shader(gl.FRAGMENT_SHADER,fs))
 gl.linkProgram(prog)
 gl.useProgram(prog)
 
@@ -111,57 +116,38 @@ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR)
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE)
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE)
 
-const txtTex=gl.createTexture()
-gl.bindTexture(gl.TEXTURE_2D,txtTex)
+const hudTex=gl.createTexture()
+gl.bindTexture(gl.TEXTURE_2D,hudTex)
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR)
-gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE)
-gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE)
 
-const uTimeLoc=gl.getUniformLocation(prog,"uTime")
+const uTime=gl.getUniformLocation(prog,"t")
 
-let streamRef=null
+function pad(n){return String(n).padStart(2,"0")}
 
-navigator.mediaDevices.getUserMedia({
-video:{width:640,height:480},
-audio:{
-echoCancellation:true,
-noiseSuppression:true,
-autoGainControl:true
-}
-})
-.then(async s=>{
-streamRef=s
-video.srcObject=s
-video.muted=true
-video.playsInline=true
-await video.play()
-})
-.catch(err=>{
-errorBox.textContent="Camera error: "+err.name
-})
-
-function updateText(){
+function updateHUD(){
 const d=new Date()
-const pad=n=>String(n).padStart(2,"0")
-const str=`JAN.${pad(d.getDate())}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-tctx.fillStyle="#000"
-tctx.fillRect(0,0,640,480)
-tctx.font="20px Courier New"
-tctx.fillStyle="#ff7a00"
-tctx.fillText(str,420,460)
+const txt=`JAN.${pad(d.getDate())}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+
+hctx.fillStyle="#000"
+hctx.fillRect(0,0,640,480)
+
+hctx.font="20px Courier New"
+hctx.fillStyle="#ff7a00"
+hctx.textBaseline="bottom"
+hctx.fillText(txt,420,470)
 }
 
-function draw(t){
+function draw(time){
 if(video.videoWidth>0){
-gl.uniform1f(uTimeLoc,t*0.001)
+gl.uniform1f(uTime,time*0.001)
 
 gl.bindTexture(gl.TEXTURE_2D,tex)
 gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video)
 
-updateText()
+updateHUD()
 
-gl.bindTexture(gl.TEXTURE_2D,txtTex)
-gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,txtCanvas)
+gl.bindTexture(gl.TEXTURE_2D,hudTex)
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,hud)
 
 gl.drawArrays(gl.TRIANGLE_STRIP,0,4)
 }
@@ -170,6 +156,31 @@ requestAnimationFrame(draw)
 }
 
 requestAnimationFrame(draw)
+
+async function startCam(){
+try{
+stream=await navigator.mediaDevices.getUserMedia({
+video:{width:640,height:480},
+audio:{
+echoCancellation:true,
+noiseSuppression:true,
+autoGainControl:true
+}
+})
+
+video.srcObject=stream
+
+video.muted=true
+video.playsInline=true
+
+await video.play()
+
+}catch(e){
+err.textContent="Camera blocked: "+e.name
+}
+}
+
+startCam()
 
 document.getElementById("snap").onclick=()=>{
 const c=document.createElement("canvas")
@@ -190,20 +201,19 @@ document.getElementById("rec").onclick=()=>{
 if(!recording){
 chunks=[]
 
-let stream=glCanvas.captureStream(30)
+let s=glCanvas.captureStream(30)
 
-if(streamRef){
-const audioTracks=streamRef.getAudioTracks()
-if(audioTracks.length>0) stream.addTrack(audioTracks[0])
+if(stream){
+stream.getAudioTracks().forEach(a=>s.addTrack(a))
 }
 
 let mime="video/mp4"
 if(!MediaRecorder.isTypeSupported(mime)) mime="video/webm"
 
-recorder=new MediaRecorder(stream,{mimeType:mime})
+recorder=new MediaRecorder(s,{mimeType:mime})
 
 recorder.ondataavailable=e=>{
-if(e.data.size>0) chunks.push(e.data)
+if(e.data.size>0)chunks.push(e.data)
 }
 
 recorder.onstop=()=>{
@@ -216,13 +226,14 @@ a.click()
 
 recorder.start()
 recording=true
-document.getElementById("rec").innerText="Stop & Save"
+document.getElementById("rec").innerText="Stop"
 }else{
 recorder.stop()
 recording=false
-document.getElementById("rec").innerText="Start Recording (MP4)"
+document.getElementById("rec").innerText="Start Recording"
 }
 }
 </script>
+
 </body>
 </html>
