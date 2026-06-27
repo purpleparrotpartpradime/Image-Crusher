@@ -5,14 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>CCD Camera</title>
 <style>
-body{margin:0;background:#0b0b10;display:flex;justify-content:center;align-items:center;height:100vh;color:#fff;font-family:system-ui}
+body{margin:0;background:#0b0b10;display:flex;justify-content:center;align-items:center;height:100vh}
 .wrap{width:640px}
-.stage{position:relative;width:640px;height:480px;background:#000;overflow:hidden}
+.stage{position:relative;width:640px;height:480px;background:#000}
 canvas{position:absolute;left:0;top:0;width:640px;height:480px}
 .controls{display:flex;gap:10px;margin-top:10px}
-button{flex:1;padding:10px;background:#111;border:1px solid #333;color:#fff;font-family:Courier New;cursor:pointer}
-button:hover{background:#1a1a1a}
-#error{position:absolute;top:10px;left:10px;font-size:12px;color:#ff5555;font-family:Courier New}
+button{flex:1;padding:10px;background:#111;color:#fff;border:1px solid #333;font-family:Courier New}
+#error{position:absolute;top:10px;left:10px;color:#ff5555;font-family:Courier New;font-size:12px}
 </style>
 </head>
 <body>
@@ -24,8 +23,8 @@ button:hover{background:#1a1a1a}
 </div>
 
 <div class="controls">
-<button id="snap">Snap JPG</button>
-<button id="rec">Start Recording</button>
+<button id="snap">Snap</button>
+<button id="rec">Record</button>
 </div>
 </div>
 
@@ -47,14 +46,13 @@ const gl=glCanvas.getContext("webgl")
 let stream=null
 let recorder=null
 let chunks=[]
-let recording=false
+let ready=false
 
 const vs=`attribute vec2 p;varying vec2 uv;void main(){uv=(p+1.0)*0.5;gl_Position=vec4(p,0.0,1.0);}`
 
 const fs=`precision mediump float;
 uniform sampler2D tex;
 uniform sampler2D hudTex;
-uniform float t;
 varying vec2 uv;
 
 float n(vec2 p){
@@ -63,28 +61,19 @@ return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);
 
 void main(){
 vec2 r=vec2(640.0,480.0);
-
-vec2 suv=uv;
-suv.x += sin(uv.y*40.0 + t*2.0)*0.002;
-
-vec2 cuv=floor(suv*r)/r;
+vec2 cuv=floor(uv*r)/r;
 
 vec3 c=texture2D(tex,cuv).rgb;
 
-float scan = sin(uv.y*480.0 + t*50.0)*0.02;
-c += scan;
+c=c*c*1.1;
+c.r*=1.12;
+c.g*=1.02;
+c.b*=0.86;
 
-c = pow(c, vec3(0.85));
+c+=n(uv*r)*0.05;
 
-c.r *= 1.12;
-c.g *= 1.03;
-c.b *= 0.85;
-
-float noise=n(uv*r + t*1000.0);
-c += noise*0.06;
-
-vec4 hudc=texture2D(hudTex,uv);
-c=mix(c,hudc.rgb,hudc.a);
+vec4 h=texture2D(hudTex,uv);
+c=mix(c,h.rgb,h.a);
 
 gl_FragColor=vec4(c,1.0);
 }`
@@ -120,107 +109,88 @@ const hudTex=gl.createTexture()
 gl.bindTexture(gl.TEXTURE_2D,hudTex)
 gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR)
 
-const uTime=gl.getUniformLocation(prog,"t")
-
 function pad(n){return String(n).padStart(2,"0")}
 
-function updateHUD(){
+function drawHUD(){
 const d=new Date()
-const txt=`JAN.${pad(d.getDate())}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+const t=`JAN.${pad(d.getDate())}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 
 hctx.fillStyle="#000"
 hctx.fillRect(0,0,640,480)
-
 hctx.font="20px Courier New"
 hctx.fillStyle="#ff7a00"
-hctx.textBaseline="bottom"
-hctx.fillText(txt,420,470)
+hctx.fillText(t,420,470)
 }
 
-function draw(time){
-if(video.videoWidth>0){
-gl.uniform1f(uTime,time*0.001)
+function render(){
+if(!ready)return requestAnimationFrame(render)
 
 gl.bindTexture(gl.TEXTURE_2D,tex)
 gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video)
 
-updateHUD()
+drawHUD()
 
 gl.bindTexture(gl.TEXTURE_2D,hudTex)
 gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,hud)
 
 gl.drawArrays(gl.TRIANGLE_STRIP,0,4)
+
+requestAnimationFrame(render)
 }
 
-requestAnimationFrame(draw)
-}
-
-requestAnimationFrame(draw)
-
-async function startCam(){
+async function start(){
 try{
 stream=await navigator.mediaDevices.getUserMedia({
 video:{width:640,height:480},
-audio:{
-echoCancellation:true,
-noiseSuppression:true,
-autoGainControl:true
-}
+audio:true
 })
 
 video.srcObject=stream
 
-video.muted=true
-video.playsInline=true
-
+video.onloadedmetadata=async()=>{
 await video.play()
+ready=true
+requestAnimationFrame(render)
+}
 
 }catch(e){
-err.textContent="Camera blocked: "+e.name
+err.textContent=e.name
 }
 }
 
-startCam()
+start()
 
 document.getElementById("snap").onclick=()=>{
 const c=document.createElement("canvas")
 c.width=640
 c.height=480
-const cx=c.getContext("2d")
-cx.drawImage(glCanvas,0,0)
-
+c.getContext("2d").drawImage(glCanvas,0,0)
 c.toBlob(b=>{
 const a=document.createElement("a")
 a.href=URL.createObjectURL(b)
 a.download="ccd.jpg"
 a.click()
-},"image/jpeg",0.6)
+},"image/jpeg",0.7)
 }
 
 document.getElementById("rec").onclick=()=>{
 if(!recording){
 chunks=[]
-
 let s=glCanvas.captureStream(30)
 
 if(stream){
-stream.getAudioTracks().forEach(a=>s.addTrack(a))
+stream.getAudioTracks().forEach(t=>s.addTrack(t))
 }
 
-let mime="video/mp4"
-if(!MediaRecorder.isTypeSupported(mime)) mime="video/webm"
+recorder=new MediaRecorder(s,{mimeType:MediaRecorder.isTypeSupported("video/mp4")?"video/mp4":"video/webm"})
 
-recorder=new MediaRecorder(s,{mimeType:mime})
-
-recorder.ondataavailable=e=>{
-if(e.data.size>0)chunks.push(e.data)
-}
+recorder.ondataavailable=e=>e.data.size&&chunks.push(e.data)
 
 recorder.onstop=()=>{
-const blob=new Blob(chunks,{type:mime})
+const b=new Blob(chunks,{type:recorder.mimeType})
 const a=document.createElement("a")
-a.href=URL.createObjectURL(blob)
-a.download="ccd."+mime.split("/")[1]
+a.href=URL.createObjectURL(b)
+a.download="ccd."+recorder.mimeType.split("/")[1]
 a.click()
 }
 
@@ -230,7 +200,7 @@ document.getElementById("rec").innerText="Stop"
 }else{
 recorder.stop()
 recording=false
-document.getElementById("rec").innerText="Start Recording"
+document.getElementById("rec").innerText="Record"
 }
 }
 </script>
